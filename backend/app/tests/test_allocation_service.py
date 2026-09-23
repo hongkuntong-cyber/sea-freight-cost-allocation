@@ -13,19 +13,10 @@ def test_008_end_to_end(tmp_db):
     assert sea_sum == Decimal("54485.80")
     duty_sum = Decimal(res["reconciliation"]["allocated_duty"]) + Decimal(res["pending_duty"])
     assert duty_sum == Decimal("7486.68")
-    # 存在 HS 不一致待确认
-    assert Decimal(res["pending_duty"]) > 0
-    # 确认待确认税项
-    confirms = {}
-    for m in res["matches"]:
-        if m["status"] == "pending" and m["candidate_refs"]:
-            confirms[m["article_key"]] = m["candidate_refs"][0]
-    res2 = svc.apply_confirmations(sid, confirms, {})
-    assert Decimal(res2["reconciliation"]["pending_duty"]) == 0
-    assert res2["reconciliation"]["unresolved_exceptions"] is False
-    # 已归集 + 待确认 仍严格等于输入
-    duty_sum2 = Decimal(res2["reconciliation"]["allocated_duty"]) + Decimal(res2["pending_duty"])
-    assert duty_sum2 == Decimal("7486.68")
+    # 新规则：HS 不一致不再判待确认；008 全部按名称+数量自动匹配，无待确认
+    assert Decimal(res["pending_duty"]) == 0
+    assert res["reconciliation"]["unresolved_exceptions"] is False
+    assert Decimal(res["reconciliation"]["allocated_duty"]) == Decimal("7486.68")
 
 
 def test_009_mirror_pending_not_forced(tmp_db):
