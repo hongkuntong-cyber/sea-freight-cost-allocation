@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -110,3 +110,6 @@ class MatchResult:
     hs_match: bool = False
     qty_match: bool = False
     desc_match: bool = False
+    # 合并报关按数量比例拆分时的权重：{ref_id: 数量权重}
+    # 非空表示本税项由多个货件合并申报，需按比例拆分归属。
+    split_weights: Dict[str, Decimal] = field(default_factory=dict)
