@@ -78,7 +78,7 @@ function download(mode: "final" | "pending") {
     </table>
     <p v-else class="ok-text">无报关数量差异。</p>
 
-    <h4>HS Code 异常</h4>
+    <h4>HS 归属说明（税单为准）</h4>
     <table v-if="data.hs_anomalies.length">
       <thead>
         <tr><th>货件</th><th>税项</th><th>报关HS</th><th>装箱HS</th><th>说明</th></tr>
@@ -93,7 +93,7 @@ function download(mode: "final" | "pending") {
         </tr>
       </tbody>
     </table>
-    <p v-else class="ok-text">无 HS Code 异常。</p>
+    <p v-else class="ok-text">HS Code 以实际海关税金单为准；装箱单为初始版本，其 HS 仅供参考，不一致时不作为异常。</p>
 
     <h4>尾差处理说明</h4>
     <p class="tail">{{ data.tail_handling }}</p>
