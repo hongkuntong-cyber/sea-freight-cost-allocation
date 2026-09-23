@@ -65,6 +65,31 @@ def _ref_from_dict(d: dict) -> PackingRef:
     )
 
 
+def _enrich_ref_dict(d: dict) -> dict:
+    """补齐 dataclass property 丢失的汇总字段（箱数/总体积/总数量/HS 集合）。
+
+    PackingRef 的 total_box_count / volume_m3 / total_qty / hs_codes 是 property，
+    _sanitize 只序列化 dataclass 字段，会导致存库与导出时这些值全部丢失（显示为 0）。
+    """
+    items = d.get("items", [])
+    d["total_box_count"] = sum(int(it.get("box_count", 0) or 0) for it in items)
+    d["volume_m3"] = str(sum(
+        (Decimal(str(it.get("box_type_volume_m3") or 0)) for it in items), Decimal("0")))
+    d["total_qty"] = str(sum(
+        (Decimal(str(it.get("total_qty") or 0)) for it in items), Decimal("0")))
+    d["hs_codes"] = sorted({it.get("hs_code") for it in items if it.get("hs_code")})
+    return d
+
+
+def _ref_to_dict(r: PackingRef) -> dict:
+    d = _sanitize(r)
+    d["total_box_count"] = int(r.total_box_count)
+    d["total_qty"] = str(r.total_qty)
+    d["volume_m3"] = str(r.volume_m3)
+    d["hs_codes"] = sorted(set(r.hs_codes))
+    return d
+
+
 def _article_from_dict(d: dict) -> CustomsArticle:
     return CustomsArticle(
         mrn=d.get("mrn", ""), declaration_no=d.get("declaration_no", ""),
@@ -111,9 +136,12 @@ def parse_and_store_packing(session_id: str, file_bytes: bytes,
                             mapping: Optional[Dict[str, int]] = None) -> dict:
     s = _load(session_id)
     res = parse_packing_excel_bytes(file_bytes, sheet_name=sheet_name, mapping=mapping)
-    s["data"]["packing"] = _sanitize(res)
+    san = _sanitize(res)
+    for rd in san.get("refs", []):
+        _enrich_ref_dict(rd)
+    s["data"]["packing"] = san
     repo.update_session(session_id, s["data"])
-    return res
+    return san
 
 
 def parse_and_store_customs(session_id: str, files: List[tuple]) -> dict:
@@ -199,7 +227,7 @@ def compute(session_id: str) -> dict:
 
     return {
         "session_id": session_id,
-        "refs": _sanitize(refs),
+        "refs": [_ref_to_dict(r) for r in refs],
         "matches": _sanitize(matches),
         "sea_freight_alloc": data["sea_alloc"],
         "article_rmb": data["article_rmb"],
