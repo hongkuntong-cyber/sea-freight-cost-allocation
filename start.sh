@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Linux / macOS 本地试用：首次运行需要 Python 3.11+、Node.js 20+ 和联网安装依赖。
+# Linux / macOS 本地试用：首次运行需要 Python 3.11+、Node.js 22+ 和联网安装依赖。
 set -e
 cd "$(dirname "$0")"
 
@@ -14,7 +14,7 @@ python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || {
 
 if [ ! -f frontend/dist/index.html ]; then
   if ! command -v npm >/dev/null 2>&1; then
-    echo "请先安装 Node.js 20 或更新版本，用于首次构建网页界面"
+    echo "请先安装 Node.js 24 LTS（或 22 LTS），用于首次构建网页界面"
     exit 1
   fi
   echo "[1/3] 构建网页界面..."
