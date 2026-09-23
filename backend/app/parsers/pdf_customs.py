@@ -183,14 +183,16 @@ def parse_customs_pdf_bytes(data: bytes, filename: str = "") -> dict:
 
     total_colli = None
     if file_type == "release":
-        mc = re.search(r"Totaal colli", text, re.I)
+        # 荷兰海关表单里 "Totaal colli (6)" 的 (6) 是栏目编号而非件数，
+        # 只有出现明确的数值形式（"Totaal colli: 320" / "Totaal colli 320"）才采信；
+        # 否则宁可留空并在界面提示缺失，也不臆测一个数字（曾误取到 3199）。
+        mc = re.search(
+            r"Totaal[ \t]+(?:aantal[ \t]+)?colli[ \t]*(?:\([ \t]*\d{1,2}[ \t]*\))?[ \t]*:?[ \t]*(\d{1,6})\b",
+            text, re.I)
         if mc:
-            # 在 "Totaal colli" 之后若干行内，取 >=100 且非小数（不紧跟/前跟逗号）的最大整数
-            region = text[mc.end():mc.end() + 1500]
-            nums = [int(x) for x in re.findall(r"(?<!,)\b(\d{2,5})\b(?!\s*,)", region)]
-            big = [n for n in nums if n >= 100]
-            if big:
-                total_colli = max(big)
+            v = int(mc.group(1))
+            if 0 < v < 100000:
+                total_colli = v
 
     articles = []
     if file_type in ("payment_invitation", "release", "declaration"):
