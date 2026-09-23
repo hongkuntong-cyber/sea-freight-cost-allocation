@@ -29,15 +29,26 @@
 - 零关税商品归集金额为 0，不为分摊整柜关税强行分配。
 - **未解决关键异常时禁止导出"最终确认版"** Excel（只能导出"待确认工作版"）。
 
-## 三、本地运行
+## 三、发给同事试用（Windows）
+
+1. 把本仓库链接发给同事。同事在仓库页面点 **Code → Download ZIP**，解压到一个普通文件夹（不要直接在压缩包内运行）。
+2. 同事电脑先安装 **Python 3.11+**（安装时勾选 `Add python.exe to PATH`）和 **Node.js 20+**。首次启动需要联网下载程序依赖；后续启动仍会检查 Python 依赖。
+3. 双击解压目录中的 `run.bat`。第一次会构建网页并安装 Python 依赖，等窗口显示服务已启动，再在浏览器打开 **http://127.0.0.1:8000**。
+4. 在网页上传**货柜计划/装箱单 Excel**及**海关缴税通知 PDF 或含 PDF 的 ZIP**，填写柜号、整柜海运费和实际人民币关税，再核对分摊结果、处理待确认项并导出 Excel。
+
+运行时保持命令窗口打开；关闭窗口即停止服务。试用记录保存在同事本机的 `backend/data/sea_freight.db`，重新下载 ZIP 或删除文件夹前，如需保留记录请备份该文件。请勿把真实业务文件、数据库或导出结果提交到这个**公开仓库**。程序只监听本机 `127.0.0.1`；每位同事在自己的电脑上运行，无需共用一台服务器。
+
+如果公司电脑不能安装 Python/Node.js，可在已有 Docker Desktop 的电脑上运行 `docker compose up --build`，然后打开同一个本机地址。Docker 首次构建也需要联网。
+
+## 四、其他运行方式
 
 ### 方式 A：仅后端 API（最快验证）
 
 ```bash
 cd backend
 python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+pip install -r ../requirements.txt
+uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 - 接口文档： http://localhost:8000/docs
@@ -48,17 +59,17 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```bash
 # 1) 构建前端
 cd frontend
-npm install
+npm ci
 npm run build        # 产物输出到 frontend/dist，由后端直接托管
 
 # 2) 启动后端（同方式 A）
 cd ../backend
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 浏览器打开 http://localhost:8000 即可使用向导式界面。
 
-> 一键脚本：Windows `run.bat`；Linux/macOS `start.sh`（仅后端）。
+> 启动脚本：Windows `run.bat`；Linux/macOS `./start.sh`。缺少前端构建产物时，会先构建网页。
 
 ### 方式 C：Docker
 
@@ -69,7 +80,7 @@ docker compose up --build
 
 数据库文件通过卷 `sea_freight_data` 持久化；可用环境变量 `SEA_FREIGHT_DB` 覆盖位置。
 
-## 四、API 速览
+## 五、API 速览
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -84,26 +95,26 @@ docker compose up --build
 
 导出文件名自动包含柜号；`mode=final` 在未解决异常时返回 400。
 
-## 五、导出 Excel 结构（4 个 Sheet）
+## 六、导出 Excel 结构（4 个 Sheet）
 
 1. **货件费用归集** —— 各货件海运费、关税、费用合计、归集状态。
 2. **箱型体积明细** —— 各箱型尺寸、单箱体积、箱型总体积。
 3. **关税匹配明细** —— 税项与货件匹配、计税金额、原币/人民币关税、分摊依据、状态。
 4. **核对与异常** —— 海运费/关税对平、箱数差异、报关数量差异、HS 异常、尾差说明、未解决异常标记。
 
-## 六、测试
+## 七、测试
 
 ```bash
 cd backend
-pip install -r requirements.txt pytest
+pip install -r ../requirements.txt pytest httpx2
 pytest app/tests -q
 ```
 
 覆盖 008（海运费 54,485.80 / 关税 7,486.68 / 合计 61,972.48）、009（海运费 56,965.80 /
 关税 12,284.50 / 合计 69,250.30，含"镜子税项归属待确认"场景）的回归，以及欧洲数字格式、
-遮盖符号、ZIP 路径穿越防护、最大余数法对平、人工确认审计等共 45 项。
+遮盖符号、ZIP 路径穿越防护、最大余数法对平、人工确认审计等测试。
 
-## 七、目录结构
+## 八、目录结构
 
 ```
 sea-freight-cost-allocation/
@@ -124,7 +135,7 @@ sea-freight-cost-allocation/
 └── README.md
 ```
 
-## 八、安全与合规
+## 九、安全与合规
 
 - 所有 SQL 使用参数化查询；会话以 UUID 为键，防止越权/遍历访问。
 - ZIP 解压做路径穿越（Zip Slip）防护。
