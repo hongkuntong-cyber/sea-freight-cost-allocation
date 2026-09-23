@@ -96,6 +96,20 @@ export interface Reconciliation {
   unresolved_exceptions: boolean;
 }
 
+export interface DataQuality {
+  ref_count: number;
+  sku_count: number;
+  total_box: number;
+  total_volume: number;
+  article_count: number;
+  eur_duty_total: number;
+  exchange_rate: number;
+  mrn: string;
+  customs_colli: number | null;
+  warnings: string[];
+  notes?: string[];
+}
+
 export interface Verification {
   sea_balanced: boolean;
   duty_balanced: boolean;
@@ -104,6 +118,7 @@ export interface Verification {
   box_count_diff: number | null;
   qty_diff_count: number;
   unresolved: boolean;
+  data_quality?: DataQuality;
 }
 
 export interface AnalyzeResult extends ComputeResult {
