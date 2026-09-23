@@ -44,8 +44,8 @@ def test_match_008_like():
     assert by_no["2"].duty_eur == Decimal("0.00")
 
 
-def test_match_multiple_candidates():
-    # 009 镜子场景：两个同描述/HS/数量货件，税项仅申报 12 -> 待确认且两个候选
+def test_match_tie_split_evenly():
+    """009 镜子场景：两个同描述/HS/数量货件，税项仅申报 12，无法区分 -> 按数量均摊。"""
     refs = [
         _ref("MA", "mirror", "7009920000", 12, "2"),
         _ref("MB", "mirror", "7009920000", 12, "2"),
@@ -53,8 +53,41 @@ def test_match_multiple_candidates():
     arts = [_art("M", "1", "mirror", "7009920000", 12, "400.00", "945.42")]
     matches = duty_core.match_articles_to_refs(arts, refs)
     m = matches[0]
-    assert m.status == "pending"
-    assert set(m.candidate_refs) == {"MA", "MB"}
+    assert m.status == "auto"
+    assert m.split_weights == {"MA": Decimal("12"), "MB": Decimal("12")}
+    # 关税 400 -> 各 200，分毫不差
+    res = duty_core.compute_ref_duty(matches, {"M|1": Decimal("400.00")})
+    assert res["allocated"]["MA"] == Decimal("200.00")
+    assert res["allocated"]["MB"] == Decimal("200.00")
+    assert res["pending_amount"] == Decimal("0.00")
+
+
+def test_match_qty_variance_still_auto():
+    """漏装/加装导致数量误差（海关 540 vs 装箱 402）：归属唯一即自动归属，不挂待确认。"""
+    refs = [_ref("R1", "Artificial plants", "6702100000", 402, "20")]
+    arts = [_art("M", "2", "Artificial plants", "6702100000", 540, "362.20", "0")]
+    matches = duty_core.match_articles_to_refs(arts, refs)
+    m = matches[0]
+    assert m.status == "auto" and m.ref_id == "R1"
+    assert "540" in m.reason and "402" in m.reason  # 差异写明在理由里
+
+
+def test_match_split_with_qty_variance():
+    """同 HS 多货件且合计 != 申报（漏装/加装）：按装箱数量比例分摊整条税项。"""
+    refs = [
+        _ref("RA", "Heated Towel Rack", "8516299900", 16, "1"),
+        _ref("RB", "Heated Towel Rack", "8516299900", 8, "1"),
+    ]
+    arts = [_art("M", "11", "Heated Towel Rack", "8516299900", 30, "100.00", "0")]
+    matches = duty_core.match_articles_to_refs(arts, refs)
+    m = matches[0]
+    assert m.status == "auto"
+    assert m.split_weights == {"RA": Decimal("16"), "RB": Decimal("8")}
+    assert "30" in m.reason and "24" in m.reason  # 海关 30 vs 装箱合计 24
+    res = duty_core.compute_ref_duty(matches, {"M|11": Decimal("100.00")})
+    assert res["allocated"]["RA"] == Decimal("66.67")
+    assert res["allocated"]["RB"] == Decimal("33.33")
+    assert res["pending_amount"] == Decimal("0.00")
 
 
 def _ref_multi(rid, items):
