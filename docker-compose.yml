@@ -3,7 +3,7 @@ services:
     build: .
     container_name: sea-freight-cost-allocation
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       # 数据库文件位置（容器内）；挂载卷以持久化。
       SEA_FREIGHT_DB: /app/data/sea_freight.db
