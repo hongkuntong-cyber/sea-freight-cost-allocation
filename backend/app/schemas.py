@@ -10,7 +10,8 @@ class CabinetInput(BaseModel):
     cabinet_no: str = Field(..., description="柜号")
     sea_freight: float = Field(..., description="整柜海运费（人民币元）")
     rmb_duty: float = Field(..., description="实际人民币关税总额")
-    exchange_rate: float = Field(..., description="货代结算汇率")
+    exchange_rate: Optional[float] = Field(
+        None, description="货代结算汇率（€→¥）；留空则由系统按 关税总额 ÷ 欧元关税总额 自动推算")
     note: str = ""
 
 
