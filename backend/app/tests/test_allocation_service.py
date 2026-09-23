@@ -49,7 +49,8 @@ def test_export_sheet1_has_box_volume_ratio(tmp_db):
     assert abs(sum(float(r[i_sea]) for r in data_rows) - 54485.80) < 0.005
 
 
-def test_009_mirror_pending_not_forced(tmp_db):
+def test_009_mirror_even_split(tmp_db):
+    """009 镜子：两个货件数量相同无法区分 -> 自动按数量均摊，不再挂待确认。"""
     sid = svc.create_session("009", 56965.80, 12284.50, 8.2, "回归")
     svc.parse_and_store_packing(sid, build_packing_excel_009())
     svc.parse_and_store_customs(sid, [("009.pdf", build_uitnodiging_pdf_009(), True)])
@@ -58,11 +59,13 @@ def test_009_mirror_pending_not_forced(tmp_db):
     assert sea_sum == Decimal("56965.80")
     duty_sum = Decimal(res["reconciliation"]["allocated_duty"]) + Decimal(res["pending_duty"])
     assert duty_sum == Decimal("12284.50")
-    # 镜子税项必须待确认，且有两个候选货件
+    # 镜子税项自动均摊到两个货件，无待确认
     mirror = next(m for m in res["matches"] if m["description"] == "mirror")
-    assert mirror["status"] == "pending"
-    assert set(mirror["candidate_refs"]) == {"RVG15056-260909-0001", "RVG15056-260909-0002"}
-    # 在用户确认前，镜子关税不得归集到任一货件
-    assert Decimal(res["duty_alloc"].get("RVG15056-260909-0001", "0")) == 0
-    assert Decimal(res["duty_alloc"].get("RVG15056-260909-0002", "0")) == 0
-    assert Decimal(res["pending_duty"]) > 0
+    assert mirror["status"] == "auto"
+    assert set(mirror["split_weights"].keys()) == {
+        "RVG15056-260909-0001", "RVG15056-260909-0002"}
+    assert Decimal(res["pending_duty"]) == 0
+    # 两个货件各分到一半镜子关税（税项 1 duty 400€ / 税项 2 lamp：见 conftest）
+    d1 = Decimal(res["duty_alloc"]["RVG15056-260909-0001"])
+    d2 = Decimal(res["duty_alloc"]["RVG15056-260909-0002"])
+    assert d1 == d2 and d1 > 0
