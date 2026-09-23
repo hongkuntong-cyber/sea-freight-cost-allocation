@@ -50,6 +50,9 @@ function refName(refId: string): string {
             <span v-if="m.status === 'pending' || m.status === 'unmatched'">
               待确认 → {{ m.candidate_refs.join("/") || "无候选" }}
             </span>
+            <span v-else-if="!m.ref_id && m.candidate_refs.length">
+              合并拆分 → {{ m.candidate_refs.join(" / ") }}
+            </span>
             <span v-else>{{ m.ref_id }}</span>
           </td>
           <td>
@@ -58,6 +61,9 @@ function refName(refId: string): string {
             </span>
             <span v-else-if="m.status === 'pending' || m.status === 'unmatched'">
               {{ (data.article_rmb[m.article_key] ?? 0).toFixed(2) }}（待确认）
+            </span>
+            <span v-else-if="!m.ref_id && m.candidate_refs.length">
+              {{ (data.article_rmb[m.article_key] ?? 0).toFixed(2) }}（按数量比例拆分）
             </span>
             <span v-else>0.00</span>
           </td>
