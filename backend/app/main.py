@@ -68,6 +68,9 @@ def _normalize_numbers(out: dict) -> dict:
     for r in out.get("refs", []) or []:
         if isinstance(r, dict) and r.get("volume_m3") is not None:
             r["volume_m3"] = _as_float(r["volume_m3"])
+    for r in ((out.get("packing") or {}).get("refs") or []):
+        if isinstance(r, dict) and r.get("volume_m3") is not None:
+            r["volume_m3"] = _as_float(r["volume_m3"])
     for m in out.get("matches", []) or []:
         if not isinstance(m, dict):
             continue
