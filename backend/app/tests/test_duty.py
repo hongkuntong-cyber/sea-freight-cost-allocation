@@ -34,9 +34,11 @@ def test_match_008_like():
     matches = duty_core.match_articles_to_refs(arts, refs)
     by_no = {m.article_no: m for m in matches}
     assert by_no["1"].status == "auto" and by_no["1"].ref_id == "R1"
-    # HS 不一致但数量/名称匹配 -> 待确认
-    assert by_no["2"].status == "pending" and "HS" in by_no["2"].reason
-    assert by_no["3"].status == "pending"
+    # HS 不一致但数量/名称匹配 -> 以税单 HS 为准，仍为自动匹配（不再判待确认）
+    assert by_no["2"].status == "auto" and by_no["2"].ref_id == "R2"
+    assert "待确认" not in by_no["2"].reason and "税单" in by_no["2"].reason
+    assert by_no["3"].status == "auto" and by_no["3"].ref_id == "R3"
+    assert "待确认" not in by_no["3"].reason and "税单" in by_no["3"].reason
     assert by_no["4"].status == "auto" and by_no["4"].ref_id == "R4"
     # 零关税商品：duty_eur=0，归集金额为 0
     assert by_no["2"].duty_eur == Decimal("0.00")
@@ -77,7 +79,7 @@ def test_compute_ref_duty_respects_total():
     refs = [_ref("R1", "bathtub", "3922100000", 330, "33"),
             _ref("R3", "vase", "7013990000", 664, "5")]
     matches = duty_core.match_articles_to_refs(arts, refs)
-    # 手动确认两者
+    # HS 不一致不再阻断：两者均按名称+数量自动匹配；此处确认仅为显式指定归属
     matches = duty_core.apply_confirmations(matches, {}, confirmations={"M|1": "R1", "M|2": "R3"})
     article_rmb = {"M|1": Decimal("2902.22"), "M|2": Decimal("2695.18")}
     res = duty_core.compute_ref_duty(matches, article_rmb)
