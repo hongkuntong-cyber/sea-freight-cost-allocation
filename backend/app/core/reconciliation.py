@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Dict, List, Optional
 
 from .decimal_utils import q2
+from .duty import normalize_hs
 from ..models import MatchResult, PackingRef
 
 
@@ -38,13 +39,22 @@ def build_reconciliation(
     if customs_total_colli is not None:
         box_count_diff = packing_box_total - customs_total_colli
 
-    # 报关数量差异：已匹配税项，海关申报数量 vs 装箱货件总数量
+    # 报关数量差异：已匹配税项，海关申报数量 vs 装箱数量。
+    # 比较口径：货件内该 HS 分组的数量（同 HS 合并报关），无该分组时退回货件总数量。
+    # 数量误差属正常业务差异（漏装/装不下/加装），此处只记录供核对，不阻断归集。
     declared_qty_diff = []
     ref_by_id = {r.ref_id: r for r in refs}
     for m in matches:
         if m.status in ("auto", "manual") and m.ref_id and m.declared_qty is not None:
             ref = ref_by_id.get(m.ref_id)
             packing_qty = ref.total_qty if ref else Decimal("0")
+            if ref is not None and m.hs_code:
+                hs = normalize_hs(m.hs_code)
+                bucket = sum((Decimal(it.total_qty) for it in ref.items
+                              if it.total_qty is not None and normalize_hs(it.hs_code) == hs),
+                             Decimal("0"))
+                if bucket > 0:
+                    packing_qty = bucket
             try:
                 diff = Decimal(m.declared_qty) - packing_qty
             except Exception:
@@ -52,6 +62,22 @@ def build_reconciliation(
             if diff is not None and diff != 0:
                 declared_qty_diff.append({
                     "ref_id": m.ref_id,
+                    "article": f"{m.article_no}: {m.description}",
+                    "customs_qty": q2(m.declared_qty),
+                    "packing_qty": q2(packing_qty),
+                    "diff": q2(diff),
+                })
+        elif m.status in ("auto", "manual") and getattr(m, "split_weights", None) \
+                and m.declared_qty is not None:
+            # 合并拆分税项：记录 海关申报数量 vs 装箱合计 的整体差异
+            try:
+                packing_qty = sum((Decimal(w) for w in m.split_weights.values()), Decimal("0"))
+                diff = Decimal(m.declared_qty) - packing_qty
+            except Exception:
+                continue
+            if diff != 0:
+                declared_qty_diff.append({
+                    "ref_id": "合并拆分：" + "/".join(m.split_weights.keys()),
                     "article": f"{m.article_no}: {m.description}",
                     "customs_qty": q2(m.declared_qty),
                     "packing_qty": q2(packing_qty),
