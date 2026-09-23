@@ -69,7 +69,7 @@ def build_reconciliation(
                 "article": f"{m.article_no}: {m.description}",
                 "customs_hs": m.hs_code,
                 "packing_hs": packing_hs,
-                "note": "HS Code 不一致，待人工确认后归集",
+                "note": "归属仍未确认，需人工指定（HS 以税单为准，装箱单 HS 为初始版本仅供参考）",
             })
 
     # 未解决关键异常：存在 pending / unmatched，或海运费/关税对平差额不为 0。
