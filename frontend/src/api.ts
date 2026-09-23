@@ -4,6 +4,7 @@ import type {
   PackingParseResult,
   CustomsParseResult,
   ComputeResult,
+  AnalyzeResult,
 } from "./types";
 
 const http = axios.create({ baseURL: "/api" });
@@ -44,6 +45,28 @@ export async function uploadCustoms(
     fd,
     { headers: { "Content-Type": "multipart/form-data" } },
   );
+  return data;
+}
+
+/** 一步式分析：填三个字段 + 上传文件，一次请求完成解析/匹配/分摊/自核。 */
+export async function analyze(payload: {
+  cabinet_no: string;
+  sea_freight: number;
+  rmb_duty: number;
+  exchange_rate?: number;
+  note?: string;
+}, packingFile: File, customsFiles: File[]): Promise<AnalyzeResult> {
+  const fd = new FormData();
+  fd.append("cabinet_no", payload.cabinet_no);
+  fd.append("sea_freight", String(payload.sea_freight));
+  fd.append("rmb_duty", String(payload.rmb_duty));
+  if (payload.exchange_rate) fd.append("exchange_rate", String(payload.exchange_rate));
+  if (payload.note) fd.append("note", payload.note);
+  fd.append("packing", packingFile);
+  for (const f of customsFiles) fd.append("customs", f);
+  const { data } = await http.post<AnalyzeResult>("/analyze", fd, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
   return data;
 }
 
