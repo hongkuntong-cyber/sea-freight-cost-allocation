@@ -54,9 +54,9 @@ def test_full_flow(tmp_db):
     assert r.content[:2] == b"PK"  # xlsx zip 头
 
 
-def test_full_flow_009_mirror_pending_blocks_export(tmp_db):
-    """009：一笔镜子税项对应两个并列货件（真正歧义），应为待确认并拦截最终导出，
-    人工确认归属后方可导出。"""
+def test_full_flow_009_auto_split_and_unmatched_blocks_export(tmp_db):
+    """009：镜子税项两个货件数量相同 -> 自动均摊，可直接导出最终版；
+    装箱单里完全没有的商品（加装场景）-> 需人工指定归属，且最终导出被拦截。"""
     c = _client(tmp_db)
     r = c.post("/api/sessions", json={"cabinet_no": "009", "sea_freight": 56965.80,
                                      "rmb_duty": 12284.50, "exchange_rate": 8.2, "note": "t"})
@@ -70,22 +70,32 @@ def test_full_flow_009_mirror_pending_blocks_export(tmp_db):
     r = c.post(f"/api/sessions/{sid}/compute")
     assert r.status_code == 200
     body = r.json()
-    pending = [m for m in body["matches"] if m["status"] == "pending"]
-    assert pending, "009 镜子税项应为待确认（两个货件并列）"
-
-    # 存在未解决异常时，最终导出被拦截
-    r = c.get(f"/api/sessions/{sid}/export?mode=final")
-    assert r.status_code == 400
-
-    # 人工确认镜子归属后，可导出最终版
-    confirms = {m["article_key"]: m["candidate_refs"][0] for m in pending}
-    r = c.post(f"/api/sessions/{sid}/confirm", json={"confirmations": confirms, "splits": {}})
-    assert r.status_code == 200
-
+    assert not [m for m in body["matches"] if m["status"] in ("pending", "unmatched")], \
+        "009 镜子应已自动均摊，无待确认"
+    # 可直接导出最终版
     r = c.get(f"/api/sessions/{sid}/export?mode=final")
     assert r.status_code == 200
     assert "009" in r.headers["content-disposition"]
     assert r.content[:2] == b"PK"  # xlsx zip 头
+
+    # 加装场景：补录一笔装箱单里完全没有的税项 -> unmatched，拦截最终导出
+    r = c.post(f"/api/sessions/{sid}/manual-article", json={
+        "article_no": "99", "description": "extra goods", "hs_code": "9503000090",
+        "declared_qty": 10, "duty_eur": 100.0, "vat_eur": 0.0})
+    assert r.status_code == 200
+    r = c.post(f"/api/sessions/{sid}/compute")
+    pending = [m for m in r.json()["matches"] if m["status"] in ("pending", "unmatched")]
+    assert pending and pending[0]["status"] == "unmatched"
+
+    r = c.get(f"/api/sessions/{sid}/export?mode=final")
+    assert r.status_code == 400
+
+    # 指定归属到第一个货件后，可导出最终版
+    confirms = {m["article_key"]: body["refs"][0]["ref_id"] for m in pending}
+    r = c.post(f"/api/sessions/{sid}/confirm", json={"confirmations": confirms, "splits": {}})
+    assert r.status_code == 200
+    r = c.get(f"/api/sessions/{sid}/export?mode=final")
+    assert r.status_code == 200
 
 
 def test_analyze_one_shot(tmp_db):
