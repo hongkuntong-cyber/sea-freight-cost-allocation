@@ -2,7 +2,10 @@
 
 规则（对应需求第七、九章）：
     - 以缴税通知中的"实际应缴关税"（Douanerechten）为主要依据，VAT 单独记录不计入分摊。
-    - 综合 HS Code、商品名称、申报数量匹配税项与货件，不得仅凭 HS 或仅凭名称强制匹配。
+    - HS Code 以实际海关税金单为准；装箱单（头程发票）为初始版本、HS 可能变动，
+      因此 HS 不一致不再作为待确认条件。匹配以「商品名称 + 申报数量」为主键，
+      税单 HS 为权威 HS（装箱单 HS 仅作参考）。
+    - 不得仅凭 HS 或仅凭名称强制匹配；仅在名称/数量不一致或货件并列等真正歧义时才待确认。
     - 匹配状态：auto（自动匹配）/ manual（人工确认）/ pending（待确认）/ unmatched（无法匹配）。
     - 零关税商品归集金额为 0，不得为分摊整柜关税强行分配。
     - 人民币分摊：按各税项原币关税占原币关税总额的比例分配"实际人民币关税总额"，
@@ -120,23 +123,30 @@ def match_articles_to_refs(articles: List[CustomsArticle], refs: List[PackingRef
         res.desc_match = desc_m
         res.candidate_refs = [ref.ref_id]
 
-        if hs_m and qty_m and desc_m:
+        # 业务规则：HS Code 以实际海关税金单为准；装箱单（头程发票）为初始版本，
+        # 其 HS 可能变动，故 HS 不一致不再作为待确认条件。匹配以「商品名称 + 申报数量」
+        # 为主键，命中即自动匹配并采用税单 HS；仅当名称或数量不一致、或货件并列等
+        # 真正歧义时才待人工确认。
+        if qty_m and desc_m:
             res.status = "auto"
-            res.reason = "HS Code、申报数量与商品名称均匹配"
-        elif (qty_m and desc_m) and not hs_m:
+            if hs_m:
+                res.reason = "商品名称、申报数量与 HS Code 一致，自动匹配"
+            else:
+                res.reason = (
+                    f"商品名称与申报数量一致，已按税单 HS 自动匹配"
+                    f"（税单 HS {art.hs_code} 与装箱单 HS "
+                    f"{sorted(set(ref.hs_codes))} 不一致；装箱单为初始版本，以税单为准）"
+                )
+        elif qty_m and not desc_m:
             res.status = "pending"
-            res.reason = (f"申报数量与商品名称匹配，但 HS Code 不一致"
-                         f"（海关 {art.hs_code} vs 装箱 {sorted(set(ref.hs_codes))}），需人工确认")
-        elif qty_m and hs_m and not desc_m:
+            res.reason = "申报数量一致但商品名称不一致，需人工确认归属"
+        elif desc_m and not qty_m:
             res.status = "pending"
-            res.reason = "HS Code 与申报数量匹配，但商品名称不一致，需人工确认"
-        elif qty_m and not hs_m and not desc_m:
+            res.reason = (f"商品名称一致但申报数量不一致"
+                         f"（海关 {art.declared_qty} vs 装箱 {ref.total_qty}），需人工确认归属")
+        elif hs_m and not (qty_m or desc_m):
             res.status = "pending"
-            res.reason = "仅申报数量匹配，HS 与名称均不一致，需人工确认"
-        elif (hs_m or desc_m) and not qty_m:
-            res.status = "pending"
-            res.reason = (f"HS/名称匹配但申报数量不一致"
-                         f"（海关 {art.declared_qty} vs 装箱 {ref.total_qty}），需人工确认")
+            res.reason = "仅 HS Code 匹配，商品名称与申报数量均不一致，证据不足，需人工确认"
         else:
             res.status = "pending"
             res.reason = "匹配证据不足，需人工确认"
