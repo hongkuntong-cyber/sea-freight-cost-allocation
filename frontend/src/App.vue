@@ -203,8 +203,8 @@ const n2 = (x: any) => Number(x ?? 0).toFixed(2);
         </div>
         <p class="conclusion" :class="v.unresolved ? 'bad' : 'ok'">
           <template v-if="v.unresolved">
-            有 {{ pendingCount }} 项需你确认归属（系统已预选推荐货件，点一次即可确认）；
-            确认前「最终版」导出会被拦截，可先导出待确认工作版。
+            有 {{ pendingCount }} 项商品在装箱单里找不到对应货件（可能是加装），需要你指定归属；
+            数量差异（漏装/装不下/加装）已自动归属并记录在核对页。确认前可先导出待确认工作版。
           </template>
           <template v-else>
             ✓ 全部核实通过：海运费与关税均已对平，无待确认项，可直接导出最终版。
@@ -218,7 +218,7 @@ const n2 = (x: any) => Number(x ?? 0).toFixed(2);
       </section>
 
       <section class="card" v-if="pendingCount">
-        <h2>待你确认（{{ pendingCount }} 项）</h2>
+        <h2>需要你指定归属（{{ pendingCount }} 项）</h2>
         <ExceptionHandling :data="result" @confirm="onConfirm" />
       </section>
 
