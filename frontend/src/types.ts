@@ -96,6 +96,23 @@ export interface Reconciliation {
   unresolved_exceptions: boolean;
 }
 
+export interface Verification {
+  sea_balanced: boolean;
+  duty_balanced: boolean;
+  match_counts: Record<string, number>;
+  pending_count: number;
+  box_count_diff: number | null;
+  qty_diff_count: number;
+  unresolved: boolean;
+}
+
+export interface AnalyzeResult extends ComputeResult {
+  cabinet_no: string;
+  packing: PackingParseResult | null;
+  customs: CustomsParseResult | null;
+  verification: Verification;
+}
+
 export interface ComputeResult {
   session_id: string;
   refs: PackingRef[];
