@@ -164,7 +164,14 @@ def export_session_excel(session_id: str, mode: str = "final") -> bytes:
                 "申报数量", "计税金额", "原币关税", "人民币关税", "分摊依据", "匹配状态"])
     _style_header(ws3, 1, 10)
     for m in matches:
-        rid = m.get("ref_id") or ("待确认：" + "/".join(m.get("candidate_refs", [])) if m["status"] in ("pending", "unmatched") else "—")
+        if m.get("ref_id"):
+            rid = m["ref_id"]
+        elif m.get("split_weights"):
+            rid = "合并拆分：" + "/".join(m.get("candidate_refs", []))
+        elif m["status"] in ("pending", "unmatched"):
+            rid = "待确认：" + "/".join(m.get("candidate_refs", []))
+        else:
+            rid = "—"
         art = article_by_key.get(m["article_key"], {})
         base = art.get("duty_base")
         rmb = article_rmb.get(m["article_key"], "0")
