@@ -29,6 +29,12 @@ const canAnalyze = computed(
 
 const v = computed(() => result.value?.verification ?? null);
 const pendingCount = computed(() => v.value?.pending_count ?? 0);
+const dq = computed(() => v.value?.data_quality ?? null);
+const n0 = (x: any) => Number(x ?? 0).toLocaleString("zh-CN");
+
+function _dqOf(r: ComputeResult) {
+  return (result.value?.verification as any)?.data_quality ?? null;
+}
 
 function recomputeVerification(r: ComputeResult) {
   const rc = r.reconciliation;
@@ -42,6 +48,7 @@ function recomputeVerification(r: ComputeResult) {
     box_count_diff: rc.box_count_diff,
     qty_diff_count: (rc.declared_qty_diff || []).length,
     unresolved: !!rc.unresolved_exceptions,
+    data_quality: _dqOf(r),
   };
 }
 
@@ -138,6 +145,37 @@ const n2 = (x: any) => Number(x ?? 0).toFixed(2);
     <p v-if="error" class="error">{{ error }}</p>
 
     <template v-if="result && v">
+      <!-- 数据来源体检：解析到多少、缺什么，一眼可见 -->
+      <section class="card" v-if="dq">
+        <h2>数据来源体检</h2>
+        <div class="dq-grid">
+          <div class="dq-item">
+            <span class="dq-k">装箱单</span>
+            <span class="dq-v">货件 {{ dq.ref_count }} · SKU/箱型行 {{ dq.sku_count }}</span>
+          </div>
+          <div class="dq-item">
+            <span class="dq-k">总箱数 / 总体积</span>
+            <span class="dq-v">{{ n0(dq.total_box) }} 箱 · {{ Number(dq.total_volume).toFixed(4) }} m³</span>
+          </div>
+          <div class="dq-item">
+            <span class="dq-k">海关税项</span>
+            <span class="dq-v">{{ dq.article_count }} 条 · MRN {{ dq.mrn || "缺" }} · 申报件数
+              {{ dq.customs_colli ?? "缺" }}</span>
+          </div>
+          <div class="dq-item">
+            <span class="dq-k">原币关税 / 汇率</span>
+            <span class="dq-v">€{{ n2(dq.eur_duty_total) }} · {{ Number(dq.exchange_rate).toFixed(4) }}</span>
+          </div>
+        </div>
+        <p v-if="dq.warnings.length" class="dq-warn">
+          ⚠ 数据缺失 {{ dq.warnings.length }} 项：{{ dq.warnings.join("；") }}
+        </p>
+        <p v-else class="dq-ok">✓ 装箱单、海关税单关键字段齐全，导出表不会缺列。</p>
+        <ul v-if="dq.notes && dq.notes.length" class="dq-notes">
+          <li v-for="n in dq.notes" :key="n">说明：{{ n }}</li>
+        </ul>
+      </section>
+
       <!-- 自核结论 -->
       <section class="card">
         <h2>自核结论</h2>
@@ -280,6 +318,52 @@ button.primary {
 .conclusion.bad {
   background: #fcf1dd;
   color: var(--warn);
+}
+.dq-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px 18px;
+  margin-bottom: 10px;
+}
+.dq-item {
+  display: flex;
+  gap: 8px;
+  font-size: 12.5px;
+  padding: 6px 10px;
+  background: #f7f9fc;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.dq-k {
+  color: var(--muted);
+  min-width: 96px;
+}
+.dq-v {
+  color: var(--text);
+}
+.dq-warn {
+  margin: 6px 0 0;
+  padding: 8px 12px;
+  border-radius: 5px;
+  background: #fbe4e1;
+  color: var(--danger);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+.dq-ok {
+  margin: 6px 0 0;
+  padding: 8px 12px;
+  border-radius: 5px;
+  background: #e3f3ea;
+  color: var(--ok);
+  font-size: 12.5px;
+}
+.dq-notes {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
 }
 .error {
   background: #fbe4e1;
