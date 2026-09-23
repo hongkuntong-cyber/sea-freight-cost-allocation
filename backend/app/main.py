@@ -79,6 +79,13 @@ def _normalize_numbers(out: dict) -> dict:
                 m[k] = _as_float(m[k])
         if m.get("declared_qty") is not None:
             m["declared_qty"] = _as_float(m["declared_qty"])
+    rc = out.get("reconciliation")
+    if isinstance(rc, dict):
+        for r in rc.get("declared_qty_diff", []) or []:
+            if isinstance(r, dict):
+                for k in ("customs_qty", "packing_qty", "diff"):
+                    if r.get(k) is not None:
+                        r[k] = _as_float(r[k])
     return out
 
 
