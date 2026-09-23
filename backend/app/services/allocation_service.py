@@ -86,14 +86,17 @@ def _article_from_dict(d: dict) -> CustomsArticle:
 
 # ---------- 会话管理 ----------
 def create_session(cabinet_no, sea_freight, rmb_duty, exchange_rate, note="") -> str:
+    # 汇率可留空：留空时存空串，在 compute 时按 关税总额 ÷ 欧元关税总额 自动推算。
+    rate_str = "" if exchange_rate in (None, "") else str(exchange_rate)
     state = {
         "cabinet_no": cabinet_no, "sea_freight": str(sea_freight),
-        "rmb_duty": str(rmb_duty), "exchange_rate": str(exchange_rate), "note": note,
+        "rmb_duty": str(rmb_duty), "exchange_rate": rate_str, "note": note,
         "packing": None, "customs": None, "matches": [], "reconciliation": {},
         "article_rmb": {}, "sea_alloc": {}, "duty_alloc": {}, "pending_duty": "0.00",
         "confirmations": {}, "splits": {}, "manual_articles": [],
     }
-    return repo.create_session(cabinet_no, sea_freight, rmb_duty, exchange_rate, note, state)
+    return repo.create_session(cabinet_no, sea_freight, rmb_duty,
+                               float(exchange_rate) if exchange_rate else 0.0, note, state)
 
 
 def _load(session_id: str) -> dict:
@@ -162,13 +165,21 @@ def compute(session_id: str) -> dict:
     ref_volumes = {r.ref_id: r.volume_m3 for r in refs}
     sea_alloc = vol_core.allocate_sea_freight(Decimal(data["sea_freight"]), ref_volumes)
 
-    # 6) 对账
+    # 6) 汇率：未填写时按 关税总额 ÷ 欧元关税总额 自动推算
     eur_duty_total = sum((a.duty_eur for a in articles), Decimal("0"))
+    rate_raw = str(data.get("exchange_rate") or "")
+    if rate_raw and Decimal(rate_raw) > 0:
+        rate = Decimal(rate_raw)
+    else:
+        rate = (Decimal(data["rmb_duty"]) / eur_duty_total) if eur_duty_total > 0 else Decimal("0")
+    data["exchange_rate"] = str(rate)
+
+    # 7) 对账
     recon = recon_core.build_reconciliation(
         sea_freight_input=Decimal(data["sea_freight"]),
         sea_allocated=sea_alloc,
         eur_duty_total=eur_duty_total,
-        exchange_rate=Decimal(data["exchange_rate"]),
+        exchange_rate=rate,
         rmb_duty_input=Decimal(data["rmb_duty"]),
         duty_allocated=duty_res["allocated"],
         pending_duty=duty_res["pending_amount"],
