@@ -57,6 +57,65 @@ def test_match_multiple_candidates():
     assert set(m.candidate_refs) == {"MA", "MB"}
 
 
+def _ref_multi(rid, items):
+    """一个货件内含多个（品名, HS, 数量, 体积）分组。"""
+    its = [
+        PackingItem(ref_id=rid, box_spec="1", box_count=1, sku="S", en_name=en, cn_name="",
+                    length_cm=10, width_cm=10, height_cm=10, weight_kg=1, single_qty=q,
+                    total_qty=q, hs_code=hs, purchase_price=None, row_index=i,
+                    single_volume_m3=Decimal(vol), box_type_volume_m3=Decimal(vol))
+        for i, (en, hs, q, vol) in enumerate(items, 1)
+    ]
+    return PackingRef(ref_id=rid, items=its)
+
+
+def test_match_011_merged_declaration_auto_split():
+    """011 真实结构：同 HS 合并报关，系统应按申报数量自动判定，不再要求人工确认。
+
+    - 货件 R1 内含 6702100000/396 与 6702909000/280 两组；R2 为 6702100000/930。
+    - 海关同 HS(6702100000) 拆成 396/280/930 三条，均能与货件分组精确对应。
+    - 毛巾架 24 由 T1(16)+T2(8) 合并申报，按比例 16:8 拆分。
+    """
+    refs = [
+        _ref_multi("R1", [("Artificial tree", "6702100000", 396, "10"),
+                          ("Artificial tree", "6702909000", 280, "10")]),
+        _ref("R2", "Artificial tree", "6702100000", 930, "10"),
+        _ref("T1", "Heated Towel Rack", "8516299000", 16, "1"),
+        _ref("T2", "Heated Towel Rack", "8516299000", 8, "1"),
+    ]
+    arts = [
+        _art("M", "1", "Artificial plan", "6702100000", 396, "273.60", "0"),
+        _art("M", "2", "Artificial plan", "6702100000", 280, "157.92", "0"),
+        _art("M", "3", "Artificial plan", "6702100000", 930, "472.07", "0"),
+        _art("M", "7", "Heated Towel  Rack", "8516299900", 24, "17.50", "0"),
+    ]
+    matches = duty_core.match_articles_to_refs(arts, refs)
+    by_no = {m.article_no: m for m in matches}
+
+    # 三条同 HS 税项按数量精确归属到对应货件，全部自动匹配
+    assert by_no["1"].status == "auto" and by_no["1"].ref_id == "R1"
+    assert by_no["2"].status == "auto" and by_no["2"].ref_id == "R1"
+    assert by_no["3"].status == "auto" and by_no["3"].ref_id == "R2"
+
+    # 合并报关（16+8=24）按数量比例自动拆分
+    m7 = by_no["7"]
+    assert m7.status == "auto"
+    assert m7.split_weights == {"T1": Decimal("16"), "T2": Decimal("8")}
+    assert m7.ref_id is None
+
+    # 归集：拆分金额按 16:8 分配，且合计严格等于该税项金额
+    article_rmb = {"M|1": Decimal("431.52"), "M|2": Decimal("305.86"),
+                   "M|3": Decimal("914.20"), "M|7": Decimal("143.50")}
+    res = duty_core.compute_ref_duty(matches, article_rmb)
+    assert res["allocated"]["T1"] == Decimal("95.67")
+    assert res["allocated"]["T2"] == Decimal("47.83")
+    assert res["allocated"]["T1"] + res["allocated"]["T2"] == Decimal("143.50")
+    # R1 收到税项 1+2，R2 收到税项 3
+    assert res["allocated"]["R1"] == Decimal("431.52") + Decimal("305.86")
+    assert res["allocated"]["R2"] == Decimal("914.20")
+    assert res["pending_amount"] == Decimal("0.00")
+
+
 def test_match_unmatched():
     refs = [_ref("R1", "bathtub", "3922100000", 330, "33")]
     arts = [_art("M", "1", "lamp", "9405200000", 50, "10.00", "2.10")]
