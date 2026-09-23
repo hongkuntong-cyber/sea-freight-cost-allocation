@@ -1,8 +1,10 @@
 import io
+import zipfile
 from fastapi.testclient import TestClient
 from app.main import app
 from app.tests.conftest import (build_packing_excel_008, build_uitnodiging_pdf_008,
-                                build_packing_excel_009, build_uitnodiging_pdf_009)
+                                build_packing_excel_009, build_uitnodiging_pdf_009,
+                                build_release_pdf_009)
 
 
 def _client(tmp_db):
@@ -115,6 +117,82 @@ def test_analyze_one_shot(tmp_db):
     assert v["unresolved"] is False
     # 金额字段应为 number，便于前端直接 toFixed
     assert isinstance(next(iter(body["sea_freight_alloc"].values())), float)
+
+
+def _minimal_pdf(text="Niets", ) -> bytes:
+    """不含任何税项的极简 PDF：模拟扫描件/未适配版式 -> 解析出 0 条税项。"""
+    import fitz
+    doc = fitz.open()
+    page = doc.new_page(width=600, height=200)
+    page.insert_text((40, 60), text, fontname="courier", fontsize=9)
+    buf = io.BytesIO()
+    doc.save(buf)
+    doc.close()
+    return buf.getvalue()
+
+
+def _analyze(c, cabinet_no="008", customs=(), sea="54485.80", duty="7486.68"):
+    files = [
+        ("packing", ("p.xlsx", build_packing_excel_008(),
+                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
+    ]
+    files += [("customs", (name, content, ctype)) for name, content, ctype in customs]
+    return c.post("/api/analyze", data={"cabinet_no": cabinet_no, "sea_freight": sea,
+                                        "rmb_duty": duty}, files=files)
+
+
+def test_analyze_rejects_no_pdf_customs(tmp_db):
+    """压缩里只有图片等非 PDF 文件 -> 明确报错，不再静默产出空表。"""
+    c = _client(tmp_db)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("scan.png", b"\x89PNG\r\n\x1a\n" + b"0" * 200)
+    r = _analyze(c, customs=[("c.zip", buf.getvalue(), "application/zip")])
+    assert r.status_code == 400
+    assert "没有 PDF" in r.json()["detail"]
+
+
+def test_analyze_rejects_zero_articles(tmp_db):
+    """PDF 解析出 0 条税项 -> 阻断（曾导致导出表关税/汇率整列为 0）。"""
+    c = _client(tmp_db)
+    r = _analyze(c, customs=[("c.pdf", _minimal_pdf(), "application/pdf")])
+    assert r.status_code == 400
+    assert "0 条税项" in r.json()["detail"]
+
+
+def test_analyze_rejects_zero_duty_amount(tmp_db):
+    """放行单有税项但无关税金额 -> 阻断并提示改传缴税通知。"""
+    c = _client(tmp_db)
+    r = _analyze(c, cabinet_no="009",
+                 customs=[("release.pdf", build_release_pdf_009(), "application/pdf")])
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert "0 条税项" in detail or "Douanerechten" in detail or "放行单" in detail
+
+
+def test_analyze_reports_data_quality(tmp_db):
+    """正常数据 -> 体检结论齐全且无缺失告警；关键列不得为 0。"""
+    c = _client(tmp_db)
+    r = _analyze(c, customs=[("c.pdf", build_uitnodiging_pdf_008(), "application/pdf")])
+    assert r.status_code == 200
+    dq = r.json()["verification"]["data_quality"]
+    assert dq["ref_count"] == 4 and dq["article_count"] == 4
+    assert dq["total_box"] == 610 and dq["total_volume"] > 0
+    assert dq["eur_duty_total"] > 0 and dq["exchange_rate"] > 0
+    assert dq["mrn"] == "26NL8DWEQ6QRD5SDR2"
+    assert dq["warnings"] == []
+    # 缴税通知本就不含 colli：只作提示、不列为缺失告警
+    assert dq["customs_colli"] is None and dq["notes"]
+
+
+def test_colli_not_invented_from_form_number(tmp_db):
+    """'Totaal colli (6)' 的 (6) 是栏目编号，不得被当成件数（旧逻辑曾误取 3199）。"""
+    from app.parsers import pdf_customs
+    c = _client(tmp_db)
+    r = _analyze(c, customs=[("c.pdf", build_uitnodiging_pdf_008(), "application/pdf")])
+    assert r.status_code == 200
+    assert r.json()["verification"]["data_quality"]["customs_colli"] is None
+    assert pdf_customs.parse_customs_pdf_bytes(build_release_pdf_009())["total_colli"] is None
 
 
 def test_export_pending_when_unresolved(tmp_db):
