@@ -82,7 +82,15 @@ def export_session_excel(session_id: str, mode: str = "final") -> bytes:
         key = f"{a.get('mrn','')}|{a.get('article_no','')}"
         article_by_key[key] = a
 
-    total_volume = sum(Decimal(r.get("volume_m3", 0)) for r in refs) or Decimal("1")
+    def _ref_volume(r: dict) -> Decimal:
+        vol_raw = r.get("volume_m3")
+        if vol_raw in (None, ""):
+            vol_raw = sum((Decimal(str(it.get("box_type_volume_m3") or 0))
+                           for it in r.get("items", [])), Decimal("0"))
+        return Decimal(str(vol_raw))
+
+    ref_vols = {r["ref_id"]: _ref_volume(r) for r in refs}
+    total_volume = sum(ref_vols.values()) or Decimal("1")
 
     wb = openpyxl.Workbook()
 
@@ -95,7 +103,11 @@ def export_session_excel(session_id: str, mode: str = "final") -> bytes:
     cum_box = cum_vol = cum_sea = cum_duty = cum_total = 0
     for r in refs:
         rid = r["ref_id"]
-        vol = Decimal(r.get("volume_m3", 0))
+        vol = ref_vols[rid]
+        box_count = r.get("total_box_count")
+        if box_count is None:
+            box_count = sum(int(it.get("box_count", 0) or 0) for it in r.get("items", []))
+        box_count = int(box_count)
         sea = Decimal(sea_alloc.get(rid, "0"))
         duty = Decimal(duty_alloc.get(rid, "0"))
         ratio = ref_volume_ratio(vol, total_volume)
@@ -103,10 +115,10 @@ def export_session_excel(session_id: str, mode: str = "final") -> bytes:
         ref_has_pending = any(
             m["ref_id"] == rid and m["status"] in ("pending", "unmatched") for m in matches)
         status = "含待确认" if ref_has_pending else "已归集"
-        ws1.append([rid, ref_category.get(rid, ""), r.get("total_box_count", 0),
+        ws1.append([rid, ref_category.get(rid, ""), box_count,
                     float(vol), float(ratio), float(sea), float(duty),
                     float(sea + duty), status])
-        cum_box += int(r.get("total_box_count", 0))
+        cum_box += box_count
         cum_vol += vol
         cum_sea += sea
         cum_duty += duty
