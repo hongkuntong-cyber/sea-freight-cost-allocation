@@ -1,5 +1,10 @@
 from decimal import Decimal
+import io
+
+import openpyxl
+
 from app.services import allocation_service as svc
+from app.services.export_excel import export_session_excel
 from app.tests.conftest import (build_packing_excel_008, build_uitnodiging_pdf_008,
                                 build_packing_excel_009, build_uitnodiging_pdf_009)
 
@@ -17,6 +22,31 @@ def test_008_end_to_end(tmp_db):
     assert Decimal(res["pending_duty"]) == 0
     assert res["reconciliation"]["unresolved_exceptions"] is False
     assert Decimal(res["reconciliation"]["allocated_duty"]) == Decimal("7486.68")
+
+
+def test_export_sheet1_has_box_volume_ratio(tmp_db):
+    """回归：导出 Sheet1 的箱数/总体积/体积占比不得为 0（此前 property 未序列化导致全 0）。"""
+    sid = svc.create_session("008", 54485.80, 7486.68, 8.2, "回归")
+    svc.parse_and_store_packing(sid, build_packing_excel_008())
+    svc.parse_and_store_customs(sid, [("njeu.pdf", build_uitnodiging_pdf_008(), True)])
+    svc.compute(sid)
+    wb = openpyxl.load_workbook(io.BytesIO(export_session_excel(sid, "final")))
+    ws = wb["货件费用归集"]
+    header = [c.value for c in ws[1]]
+    i_box = header.index("箱数")
+    i_vol = header.index("总体积（m³）")
+    i_ratio = header.index("体积占比")
+    i_sea = header.index("海运费（元）")
+    rows = [[c.value for c in row] for row in ws.iter_rows(min_row=2)]
+    data_rows = [r for r in rows if r[0] not in ("合计", "待确认-未归属税项", None)]
+    assert data_rows, "应有货件数据行"
+    # 箱数合计 610、总体积 > 0、各行占比 > 0 且合计≈1
+    assert sum(r[i_box] for r in data_rows) == 610
+    assert sum(float(r[i_vol]) for r in data_rows) > 0
+    assert all(float(r[i_ratio]) > 0 for r in data_rows)
+    assert abs(sum(float(r[i_ratio]) for r in data_rows) - 1.0) < 1e-6
+    # 海运费合计仍等于输入
+    assert abs(sum(float(r[i_sea]) for r in data_rows) - 54485.80) < 0.005
 
 
 def test_009_mirror_pending_not_forced(tmp_db):
