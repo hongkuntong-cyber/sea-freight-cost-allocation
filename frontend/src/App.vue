@@ -1,311 +1,291 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
-import {
-  createSession,
-  uploadPacking,
-  uploadCustoms,
-  compute,
-  confirm,
-} from "./api";
-import type {
-  SessionSummary,
-  PackingParseResult,
-  CustomsParseResult,
-  ComputeResult,
-} from "./types";
-import PackingPreview from "./components/PackingPreview.vue";
-import CustomsPreview from "./components/CustomsPreview.vue";
+import { analyze, confirm } from "./api";
+import type { AnalyzeResult, ComputeResult } from "./types";
 import AllocationResult from "./components/AllocationResult.vue";
 import ExceptionHandling from "./components/ExceptionHandling.vue";
 import ReconciliationExport from "./components/ReconciliationExport.vue";
 
-const steps = [
-  "① 费用输入",
-  "② 文件上传",
-  "③ 装箱单预览",
-  "④ 税项预览",
-  "⑤ 分摊计算",
-  "⑥ 异常处理",
-  "⑦ 最终核对导出",
-];
-const step = ref(0);
-
-const cabinet = ref({ cabinet_no: "", sea_freight: "", rmb_duty: "", exchange_rate: "8.2", note: "" });
-const session = ref<SessionSummary | null>(null);
-
+const form = ref({
+  cabinet_no: "",
+  sea_freight: "",
+  rmb_duty: "",
+  exchange_rate: "",
+});
 const packingFile = ref<File | null>(null);
 const customsFiles = ref<File[]>([]);
-const packing = ref<PackingParseResult | null>(null);
-const customs = ref<CustomsParseResult | null>(null);
-const result = ref<ComputeResult | null>(null);
-
+const result = ref<AnalyzeResult | null>(null);
 const error = ref("");
 const busy = ref(false);
 
-const canUpload = computed(() => !!session.value);
-const canPreview = computed(() => !!packing.value && !!customs.value);
-const canCompute = computed(() => canPreview.value);
-const canExceptions = computed(() => !!result.value);
-const canExport = computed(() => !!result.value);
+const canAnalyze = computed(
+  () =>
+    !!form.value.cabinet_no &&
+    !!form.value.sea_freight &&
+    !!form.value.rmb_duty &&
+    !!packingFile.value &&
+    customsFiles.value.length > 0,
+);
 
-function go(i: number) {
-  if (i === 1 && !session.value) return;
-  if (i >= 2 && !canPreview.value) return;
-  if (i === 5 && !result.value) return;
-  if (i === 6 && !result.value) return;
-  step.value = i;
+const v = computed(() => result.value?.verification ?? null);
+const pendingCount = computed(() => v.value?.pending_count ?? 0);
+
+function recomputeVerification(r: ComputeResult) {
+  const rc = r.reconciliation;
+  const counts: Record<string, number> = { auto: 0, manual: 0, pending: 0, unmatched: 0 };
+  for (const m of r.matches) counts[m.status] = (counts[m.status] ?? 0) + 1;
+  return {
+    sea_balanced: Math.abs(Number(rc.sea_freight_diff)) < 0.005,
+    duty_balanced: Math.abs(Number(rc.duty_diff)) < 0.005,
+    match_counts: counts,
+    pending_count: (counts.pending ?? 0) + (counts.unmatched ?? 0),
+    box_count_diff: rc.box_count_diff,
+    qty_diff_count: (rc.declared_qty_diff || []).length,
+    unresolved: !!rc.unresolved_exceptions,
+  };
 }
 
-async function createSessionAndNext() {
+async function runAnalyze() {
   error.value = "";
   busy.value = true;
+  result.value = null;
   try {
-    const s = await createSession({
-      cabinet_no: cabinet.value.cabinet_no,
-      sea_freight: Number(cabinet.value.sea_freight),
-      rmb_duty: Number(cabinet.value.rmb_duty),
-      exchange_rate: Number(cabinet.value.exchange_rate),
-      note: cabinet.value.note,
-    });
-    session.value = s;
-    step.value = 1;
+    result.value = await analyze(
+      {
+        cabinet_no: form.value.cabinet_no,
+        sea_freight: Number(form.value.sea_freight),
+        rmb_duty: Number(form.value.rmb_duty),
+        exchange_rate: form.value.exchange_rate
+          ? Number(form.value.exchange_rate)
+          : undefined,
+      },
+      packingFile.value!,
+      customsFiles.value,
+    );
   } catch (e: any) {
-    error.value = "创建货柜会话失败：" + (e?.message || e);
-  } finally {
-    busy.value = false;
-  }
-}
-
-async function uploadAll() {
-  if (!session.value) return;
-  error.value = "";
-  busy.value = true;
-  try {
-    if (packingFile.value) {
-      packing.value = await uploadPacking(session.value.session_id, packingFile.value);
-    }
-    if (customsFiles.value.length) {
-      customs.value = await uploadCustoms(session.value.session_id, customsFiles.value);
-    }
-    step.value = 2;
-  } catch (e: any) {
-    error.value = "上传解析失败：" + (e?.message || e);
-  } finally {
-    busy.value = false;
-  }
-}
-
-async function runCompute() {
-  if (!session.value) return;
-  error.value = "";
-  busy.value = true;
-  try {
-    result.value = await compute(session.value.session_id);
-    step.value = 5;
-  } catch (e: any) {
-    error.value = "计算失败：" + (e?.message || e);
+    error.value = "分析失败：" + (e?.response?.data?.detail || e?.message || e);
   } finally {
     busy.value = false;
   }
 }
 
 async function onConfirm(payload: Record<string, string>) {
-  if (!session.value) return;
+  if (!result.value) return;
   error.value = "";
   busy.value = true;
   try {
-    result.value = await confirm(session.value.session_id, payload);
-    await runCompute2();
+    const r = await confirm(result.value.session_id, payload);
+    result.value = { ...result.value, ...r, verification: recomputeVerification(r) };
   } catch (e: any) {
-    error.value = "确认失败：" + (e?.message || e);
+    error.value = "确认失败：" + (e?.response?.data?.detail || e?.message || e);
   } finally {
     busy.value = false;
   }
 }
 
-async function runCompute2() {
-  if (!session.value) return;
-  result.value = await compute(session.value.session_id);
+function onPacking(e: Event) {
+  packingFile.value = (e.target as HTMLInputElement).files?.[0] ?? null;
+}
+function onCustoms(e: Event) {
+  customsFiles.value = Array.from((e.target as HTMLInputElement).files ?? []);
 }
 
-function onCustomsChange(e: Event) {
-  const input = e.target as HTMLInputElement;
-  customsFiles.value = input.files ? Array.from(input.files) : [];
-}
+const n2 = (x: any) => Number(x ?? 0).toFixed(2);
 </script>
 
 <template>
-  <div class="layout">
-    <aside class="sidebar">
-      <h1>海运费用<br />归集与关税分摊</h1>
-      <nav>
-        <button
-          v-for="(s, i) in steps"
-          :key="i"
-          class="step"
-          :class="{ active: step === i, disabled: (i === 1 && !session) || (i >= 2 && !canPreview) || (i >= 5 && !result) }"
-          @click="go(i)"
-        >
-          {{ s }}
-        </button>
-      </nav>
-      <div class="meta" v-if="session">
-        <div>当前货柜：{{ session.cabinet_no }}</div>
-        <div class="sid">会话：{{ session.session_id.slice(0, 8) }}</div>
+  <div class="page">
+    <header>
+      <h1>海运费用归集与关税分摊</h1>
+      <p class="sub">
+        填写柜号 / 海运费 / 关税总额，上传装箱单与海关税单，点一次「开始分析」——
+        系统自动解析、匹配、分摊并完成自核，结果直接呈现。
+      </p>
+    </header>
+
+    <section class="card">
+      <div class="grid">
+        <div>
+          <label>货柜号 *</label>
+          <input v-model="form.cabinet_no" placeholder="如 008" />
+        </div>
+        <div>
+          <label>整柜海运费（元）*</label>
+          <input v-model="form.sea_freight" type="number" placeholder="54485.80" />
+        </div>
+        <div>
+          <label>关税总额（元）*</label>
+          <input v-model="form.rmb_duty" type="number" placeholder="7486.68" />
+        </div>
+        <div>
+          <label>汇率 €→¥（可留空）</label>
+          <input v-model="form.exchange_rate" type="number" step="0.01" placeholder="留空自动推算" />
+        </div>
+        <div class="full">
+          <label>装箱单 Excel *</label>
+          <input type="file" accept=".xlsx,.xls" @change="onPacking" />
+        </div>
+        <div class="full">
+          <label>海关税金单（PDF 或 ZIP，可多选）*</label>
+          <input type="file" accept=".pdf,.zip" multiple @change="onCustoms" />
+        </div>
       </div>
-    </aside>
+      <button class="primary" :disabled="busy || !canAnalyze" @click="runAnalyze">
+        {{ busy ? "分析中…" : "开始分析" }}
+      </button>
+    </section>
 
-    <main class="content">
-      <p v-if="error" class="error">{{ error }}</p>
+    <p v-if="error" class="error">{{ error }}</p>
 
-      <!-- ① 费用输入 -->
-      <section v-show="step === 0">
-        <h2>① 费用输入（一个货柜一次核算）</h2>
-        <div class="form-grid">
-          <div><label>货柜号 *</label><input v-model="cabinet.cabinet_no" placeholder="如 008" /></div>
-          <div><label>整柜海运费（元）*</label><input v-model="cabinet.sea_freight" type="number" placeholder="54485.80" /></div>
-          <div><label>实际人民币关税（元）*</label><input v-model="cabinet.rmb_duty" type="number" placeholder="7486.68" /></div>
-          <div><label>结算汇率（€→¥）</label><input v-model="cabinet.exchange_rate" type="number" step="0.01" placeholder="8.2" /></div>
-          <div class="full"><label>备注</label><input v-model="cabinet.note" placeholder="可选" /></div>
+    <template v-if="result && v">
+      <!-- 自核结论 -->
+      <section class="card">
+        <h2>自核结论</h2>
+        <div class="checks">
+          <span class="check" :class="v.sea_balanced ? 'ok' : 'bad'">
+            {{ v.sea_balanced ? "✓" : "✗" }} 海运费对平
+            <b>{{ n2(result.reconciliation.allocated_sea_freight) }}</b>
+            / 输入 {{ n2(result.reconciliation.original_sea_freight) }}
+          </span>
+          <span class="check" :class="v.duty_balanced ? 'ok' : 'bad'">
+            {{ v.duty_balanced ? "✓" : "✗" }} 关税对平
+            <b>{{ n2(Number(result.reconciliation.allocated_duty) + Number(result.reconciliation.pending_duty)) }}</b>
+            / 输入 {{ n2(result.reconciliation.rmb_duty_input) }}
+          </span>
+          <span class="check" :class="pendingCount ? 'warn' : 'ok'">
+            匹配：自动 {{ v.match_counts.auto }} · 人工 {{ v.match_counts.manual }} ·
+            待确认 {{ v.match_counts.pending }} · 无匹配 {{ v.match_counts.unmatched }}
+          </span>
+          <span class="check" :class="v.qty_diff_count ? 'warn' : 'ok'">
+            报关数量差异 {{ v.qty_diff_count }} 项
+          </span>
+          <span class="check" :class="v.box_count_diff ? 'warn' : 'ok'">
+            箱数差异 {{ v.box_count_diff ?? "—" }}
+          </span>
         </div>
-        <button :disabled="busy || !cabinet.cabinet_no || !cabinet.sea_freight || !cabinet.rmb_duty" @click="createSessionAndNext">
-          {{ busy ? "处理中…" : "创建货柜会话并下一步" }}
-        </button>
+        <p class="conclusion" :class="v.unresolved ? 'bad' : 'ok'">
+          <template v-if="v.unresolved">
+            有 {{ pendingCount }} 项需你确认归属（系统已预选推荐货件，点一次即可确认）；
+            确认前「最终版」导出会被拦截，可先导出待确认工作版。
+          </template>
+          <template v-else>
+            ✓ 全部核实通过：海运费与关税均已对平，无待确认项，可直接导出最终版。
+          </template>
+        </p>
       </section>
 
-      <!-- ② 文件上传 -->
-      <section v-show="step === 1">
-        <h2>② 文件上传</h2>
-        <div class="form-grid">
-          <div class="full">
-            <label>装箱单 Excel（货件编号 / 箱号 / 尺寸 / HS Code）</label>
-            <input type="file" accept=".xlsx,.xls" @change="e => packingFile = (e.target as HTMLInputElement).files?.[0] ?? null" />
-          </div>
-          <div class="full">
-            <label>海关税单（PDF 或 ZIP 多个 PDF，可多选）</label>
-            <input type="file" accept=".pdf,.zip" multiple @change="onCustomsChange" />
-          </div>
-        </div>
-        <p class="hint">支持荷兰海关缴税通知（UITNODIGING）、放行单（TOESTEMMING）等；VAT 不计入关税分摊。</p>
-        <button :disabled="busy || !packingFile || !customsFiles.length" @click="uploadAll">
-          {{ busy ? "解析中…" : "上传并解析" }}
-        </button>
-      </section>
-
-      <!-- ③ 装箱单预览 -->
-      <section v-show="step === 2">
-        <h2>③ 装箱单预览</h2>
-        <PackingPreview :data="packing" />
-        <button class="ghost" @click="step = 3">下一步：税项预览</button>
-      </section>
-
-      <!-- ④ 税项预览 -->
-      <section v-show="step === 3">
-        <h2>④ 海关税项预览</h2>
-        <CustomsPreview :data="customs" />
-        <button class="ghost" @click="step = 4">下一步：分摊计算</button>
-      </section>
-
-      <!-- ⑤ 分摊计算 -->
-      <section v-show="step === 4">
-        <h2>⑤ 分摊计算</h2>
-        <p class="hint">按体积占比分摊海运费，按各税项原币关税比例分摊人民币关税；均用最大余数法严格对平。</p>
-        <button :disabled="busy" @click="runCompute">{{ busy ? "计算中…" : "执行计算" }}</button>
+      <section class="card">
+        <h2>分摊明细</h2>
         <AllocationResult :data="result" />
       </section>
 
-      <!-- ⑥ 异常处理 -->
-      <section v-show="step === 5">
-        <h2>⑥ 异常处理（人工确认归属）</h2>
+      <section class="card" v-if="pendingCount">
+        <h2>待你确认（{{ pendingCount }} 项）</h2>
         <ExceptionHandling :data="result" @confirm="onConfirm" />
-        <button class="ghost" @click="step = 6">下一步：核对与导出</button>
       </section>
 
-      <!-- ⑦ 最终核对导出 -->
-      <section v-show="step === 6">
-        <h2>⑦ 最终核对与导出</h2>
-        <ReconciliationExport :data="result?.reconciliation ?? null" :session-id="session?.session_id ?? ''" />
+      <section class="card">
+        <h2>对账与导出</h2>
+        <ReconciliationExport
+          :data="result.reconciliation"
+          :session-id="result.session_id"
+        />
       </section>
-    </main>
+    </template>
   </div>
 </template>
 
 <style scoped>
-.layout {
-  display: flex;
-  min-height: 100vh;
+.page {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 26px 24px 60px;
 }
-.sidebar {
-  width: 240px;
-  background: var(--primary);
-  color: #fff;
-  padding: 20px 14px;
-  flex-shrink: 0;
+header h1 {
+  margin: 0 0 6px;
+  color: var(--primary);
+  font-size: 22px;
 }
-.sidebar h1 {
-  font-size: 18px;
-  line-height: 1.4;
+.sub {
   margin: 0 0 18px;
-}
-.sidebar nav {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.step {
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
-  text-align: left;
-  padding: 8px 10px;
+  color: var(--muted);
   font-size: 13px;
+  line-height: 1.7;
 }
-.step.active {
-  background: #fff;
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 20px;
+  margin-bottom: 16px;
+}
+.card h2 {
+  margin: 0 0 12px;
   color: var(--primary);
-  font-weight: 700;
+  font-size: 15px;
 }
-.step.disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.meta {
-  margin-top: 20px;
-  font-size: 12px;
-  opacity: 0.85;
-}
-.meta .sid {
-  opacity: 0.7;
-}
-.content {
-  flex: 1;
-  padding: 28px 36px;
-  max-width: 1100px;
-}
-.content h2 {
-  color: var(--primary);
-  margin-top: 0;
-}
-.form-grid {
+.grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 14px;
   margin-bottom: 16px;
 }
-.form-grid .full {
+.grid .full {
   grid-column: 1 / -1;
 }
-.hint {
-  color: var(--muted);
+button.primary {
+  padding: 10px 22px;
+  font-size: 14px;
+}
+.checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.check {
+  padding: 6px 12px;
+  border-radius: 14px;
+  font-size: 12.5px;
+  border: 1px solid var(--border);
+  background: #f7f9fc;
+  color: var(--text);
+}
+.check.ok {
+  background: #e3f3ea;
+  color: var(--ok);
+  border-color: #bfe0cd;
+}
+.check.warn {
+  background: #fcf1dd;
+  color: var(--warn);
+  border-color: #f0dcb4;
+}
+.check.bad {
+  background: #fbe4e1;
+  color: var(--danger);
+  border-color: #f0c4bd;
+}
+.conclusion {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 6px;
   font-size: 13px;
   line-height: 1.7;
+}
+.conclusion.ok {
+  background: #e3f3ea;
+  color: var(--ok);
+}
+.conclusion.bad {
+  background: #fcf1dd;
+  color: var(--warn);
 }
 .error {
   background: #fbe4e1;
   color: var(--danger);
   padding: 10px 14px;
   border-radius: 6px;
-}
-section {
-  margin-bottom: 20px;
+  font-size: 13px;
 }
 </style>
