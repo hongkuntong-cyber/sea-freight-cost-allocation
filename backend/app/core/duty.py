@@ -1,11 +1,14 @@
 """关税（进口关税）匹配与人民币分摊。
 
-规则（对应需求第七、九章）：
+规则：
     - 以缴税通知中的"实际应缴关税"（Douanerechten）为主要依据，VAT 单独记录不计入分摊。
     - HS Code 以实际海关税金单为准；装箱单（头程发票）为初始版本、HS 可能变动，
-      因此 HS 不一致不再作为待确认条件。匹配以「商品名称 + 申报数量」为主键，
-      税单 HS 为权威 HS（装箱单 HS 仅作参考）。
-    - 不得仅凭 HS 或仅凭名称强制匹配；仅在名称/数量不一致或货件并列等真正歧义时才待确认。
+      因此 HS 不一致不再作为待确认条件。
+    - 装箱数量与海关申报数量存在误差属**正常业务差异**（漏装 / 装不下 / 加装其他货件），
+      不作为待确认条件：归属唯一时自动归属，差异记录在「报关数量差异」中供核对。
+    - 同 HS 合并报关：多个货件并列时按**装箱数量比例**拆分该税项（同 HS 同税率，
+      按量分摊即为公允口径）；数量完全相同无法区分时均摊。
+    - 仅当税项在装箱单里**完全找不到对应商品**（无任何候选）时才需要人工指定归属。
     - 匹配状态：auto（自动匹配）/ manual（人工确认）/ pending（待确认）/ unmatched（无法匹配）。
     - 零关税商品归集金额为 0，不得为分摊整柜关税强行分配。
     - 人民币分摊：按各税项原币关税占原币关税总额的比例分配"实际人民币关税总额"，
@@ -64,37 +67,36 @@ def _qty_buckets(ref: PackingRef) -> List[Decimal]:
 
 def _resolve_merged_by_qty(article: CustomsArticle,
                            candidates: List[PackingRef]) -> Optional[tuple]:
-    """同 HS 合并报关时，用申报数量反推归属，避免无谓的人工确认。
+    """同 HS 合并报关 / 多货件并列时，按装箱数量自动拆分，避免无谓的人工确认。
 
     返回 (kind, payload)：
       - ("unique", ref_id)            申报数量与某货件的 HS 分组数量精确一致且唯一
-      - ("split", {ref_id: 数量权重})  候选货件分组数量合计 == 申报数量，按数量比例拆分
-      - None                          无法唯一判定，保持待确认（绝不强行归集）
+      - ("split", {ref_id: 数量权重})  按装箱数量比例拆分（合计相等为精确拆分，
+                                       不相等则视为漏装/加装等正常差异的比例分摊）
+      - None                          候选货件没有任何数量信息，只能人工指定
     """
     a_qty = article.declared_qty
-    if a_qty is None:
-        return None
-    a_qty = Decimal(a_qty)
-
     buckets: List[tuple] = []
     for r in candidates:
         for q in _qty_buckets(r):
             buckets.append((r.ref_id, q))
-
-    exact = [b for b in buckets if b[1] == a_qty]
-    if len(exact) == 1:
-        return ("unique", exact[0][0])
-    if len(exact) > 1:
-        # 多个货件数量都等于申报数量，无法区分（如 009 两面镜子各 12，仅申报 12）
+    if not buckets:
         return None
 
-    total = sum((b[1] for b in buckets), Decimal("0"))
-    if buckets and total == a_qty and len(buckets) > 1:
-        weights: Dict[str, Decimal] = {}
-        for rid, q in buckets:
-            weights[rid] = weights.get(rid, Decimal("0")) + q
-        return ("split", weights)
-    return None
+    if a_qty is not None:
+        a_qty = Decimal(a_qty)
+        exact = [b for b in buckets if b[1] == a_qty]
+        if len(exact) == 1:
+            return ("unique", exact[0][0])
+
+    # 同 HS 同税率：按装箱数量比例分摊即为公允口径（含合计相等/不等两种情形）。
+    # 数量完全相同的多个货件（如两面镜子各 12）自然得到均摊结果。
+    weights: Dict[str, Decimal] = {}
+    for rid, q in buckets:
+        weights[rid] = weights.get(rid, Decimal("0")) + q
+    if sum(weights.values()) <= 0:
+        return None
+    return ("split", weights)
 
 
 def match_articles_to_refs(articles: List[CustomsArticle], refs: List[PackingRef]) -> List[MatchResult]:
@@ -147,7 +149,8 @@ def match_articles_to_refs(articles: List[CustomsArticle], refs: List[PackingRef
             mrn=art.mrn, article_no=art.article_no, description=art.description,
             hs_code=art.hs_code, declared_qty=art.declared_qty,
             duty_eur=art.duty_eur, vat_eur=art.vat_eur,
-            status="unmatched", reason="未找到可匹配的货件（税单有记录但装箱单无对应货件）",
+            status="unmatched",
+            reason="装箱单里没有找到该商品（可能加装在其他货件），需要人工指定归属",
         )
 
         if max_score <= 0 or not top:
@@ -155,7 +158,7 @@ def match_articles_to_refs(articles: List[CustomsArticle], refs: List[PackingRef
             continue
 
         if len(top) > 1:
-            # 多个货件并列：先按"同 HS 合并报关"用申报数量自动判定，判不了才待确认
+            # 多个货件并列：按数量自动判定/拆分；完全没有数量信息才待确认
             resolved = _resolve_merged_by_qty(art, [t[1] for t in top])
             if resolved:
                 kind, payload = resolved
@@ -172,16 +175,15 @@ def match_articles_to_refs(articles: List[CustomsArticle], refs: List[PackingRef
                     res.ref_id = None
                     res.candidate_refs = list(payload.keys())
                     res.split_weights = dict(payload)
-                    res.reason = ("同 HS 合并报关：多个货件合并申报"
-                                  f"（合计 {sum(payload.values())} = 申报 {art.declared_qty}），"
-                                  "已按各货件数量比例自动拆分归属")
+                    bucket_total = sum(payload.values())
+                    res.reason = _split_reason(art, payload, bucket_total)
                 results.append(res)
                 continue
 
-            # 多个货件并列，无法唯一确认
+            # 候选货件没有任何数量信息，无法自动拆分
             res.status = "pending"
             res.candidate_refs = [t[1].ref_id for t in top]
-            res.reason = "多个货件均匹配，无法自动确认，需人工指定归属"
+            res.reason = "多个货件可能相关但均无数量信息，无法自动拆分，需人工指定归属"
             res.hs_match = top[0][2]
             res.qty_match = top[0][3]
             res.desc_match = top[0][4]
@@ -195,37 +197,57 @@ def match_articles_to_refs(articles: List[CustomsArticle], refs: List[PackingRef
         res.qty_match = qty_m
         res.desc_match = desc_m
         res.candidate_refs = [ref.ref_id]
-
-        # 业务规则：HS Code 以实际海关税金单为准；装箱单（头程发票）为初始版本，
-        # 其 HS 可能变动，故 HS 不一致不再作为待确认条件。匹配以「商品名称 + 申报数量」
-        # 为主键，命中即自动匹配并采用税单 HS；仅当名称或数量不一致、或货件并列等
-        # 真正歧义时才待人工确认。
-        if qty_m and desc_m:
-            res.status = "auto"
-            if hs_m:
-                res.reason = "商品名称、申报数量与 HS Code 一致，自动匹配"
-            else:
-                res.reason = (
-                    f"商品名称与申报数量一致，已按税单 HS 自动匹配"
-                    f"（税单 HS {art.hs_code} 与装箱单 HS "
-                    f"{sorted(set(ref.hs_codes))} 不一致；装箱单为初始版本，以税单为准）"
-                )
-        elif qty_m and not desc_m:
-            res.status = "pending"
-            res.reason = "申报数量一致但商品名称不一致，需人工确认归属"
-        elif desc_m and not qty_m:
-            res.status = "pending"
-            res.reason = (f"商品名称一致但申报数量不一致"
-                         f"（海关 {art.declared_qty} vs 装箱 {ref.total_qty}），需人工确认归属")
-        elif hs_m and not (qty_m or desc_m):
-            res.status = "pending"
-            res.reason = "仅 HS Code 匹配，商品名称与申报数量均不一致，证据不足，需人工确认"
-        else:
-            res.status = "pending"
-            res.reason = "匹配证据不足，需人工确认"
-
+        res.status = "auto"
+        res.reason = _unique_reason(art, ref, hs_m, qty_m, desc_m)
         results.append(res)
     return results
+
+
+def _qty_diff_txt(art: CustomsArticle, ref: PackingRef) -> str:
+    if art.declared_qty is None:
+        return ""
+    try:
+        d = Decimal(art.declared_qty) - Decimal(ref.total_qty)
+        return f"（海关申报 {art.declared_qty} vs 装箱 {ref.total_qty}，差 {d}）"
+    except Exception:
+        return f"（海关申报 {art.declared_qty} vs 装箱 {ref.total_qty}）"
+
+
+def _unique_reason(art: CustomsArticle, ref: PackingRef,
+                   hs_m: bool, qty_m: bool, desc_m: bool) -> str:
+    """唯一候选时的归属理由：数量误差视为正常业务差异，只说明、不阻断。"""
+    if qty_m and desc_m:
+        if hs_m:
+            return "商品名称、申报数量与 HS Code 一致，自动匹配"
+        return (f"商品名称与申报数量一致，已按税单 HS 自动匹配"
+                f"（税单 HS {art.hs_code} 与装箱单 HS "
+                f"{sorted(set(ref.hs_codes))} 不一致；装箱单为初始版本，以税单为准）")
+    diff = _qty_diff_txt(art, ref)
+    if desc_m and not qty_m:
+        return ("商品名称一致，已自动归属该货件" + diff +
+                "；数量差异多为漏装/装不下/加装等正常情况，已记录在「核对与异常」页")
+    if qty_m and not desc_m:
+        return "申报数量一致但商品名称写法不同（装箱单与税单口径不同），已自动归属该货件"
+    if hs_m:
+        return (f"HS Code {art.hs_code} 一致（同 HS 同税率，归属到哪个货件都不影响税额）；"
+                "名称与数量有差异" + diff + "，已按税单归属该货件，差异记录在「核对与异常」页")
+    return ("HS Code 近似（前 8 位相同，税单 " + str(art.hs_code) + "）；已按税单归属该货件" +
+            diff + "，请留意「核对与异常」页差异")
+
+
+def _split_reason(art: CustomsArticle, weights: Dict[str, Decimal],
+                  bucket_total: Decimal) -> str:
+    refs_txt = "、".join(f"{k}({v})" for k, v in weights.items())
+    if art.declared_qty is None:
+        return (f"多个货件合并相关（{refs_txt}），已按装箱数量比例分摊")
+    if bucket_total == Decimal(art.declared_qty):
+        return (f"同 HS 合并报关：多个货件合并申报"
+                f"（装箱合计 {bucket_total} = 申报 {art.declared_qty}），"
+                f"已按各货件数量比例自动拆分归属（{refs_txt}）")
+    diff = Decimal(art.declared_qty) - bucket_total
+    return (f"海关申报 {art.declared_qty}，装箱单对应合计 {bucket_total}"
+            f"（差 {diff}，可能漏装/装不下/加装），已按装箱数量比例分摊到各货件（{refs_txt}），"
+            "差异记录在「核对与异常」页")
 
 
 def allocate_article_rmb(article_eur: List[Decimal], rmb_total: Decimal) -> List[Decimal]:
