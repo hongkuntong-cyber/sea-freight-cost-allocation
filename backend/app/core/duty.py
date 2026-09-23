@@ -47,6 +47,56 @@ def _desc_similarity(a: str, b: str) -> float:
     return common / len(longer) if longer else 0.0
 
 
+def _qty_buckets(ref: PackingRef) -> List[Decimal]:
+    """货件按装箱 HS 分组的数量桶。
+
+    同 HS 会合并报关，一个货件内部可能含多个 HS 分组（且装箱 HS 为初始版本可能变动），
+    因此按"HS 分组数量"而非货件总数量来比对申报数量。
+    """
+    acc: Dict[str, Decimal] = {}
+    for it in ref.items:
+        if it.total_qty is None:
+            continue
+        key = normalize_hs(it.hs_code) or "_"
+        acc[key] = acc.get(key, Decimal("0")) + Decimal(it.total_qty)
+    return [q for q in acc.values() if q > 0]
+
+
+def _resolve_merged_by_qty(article: CustomsArticle,
+                           candidates: List[PackingRef]) -> Optional[tuple]:
+    """同 HS 合并报关时，用申报数量反推归属，避免无谓的人工确认。
+
+    返回 (kind, payload)：
+      - ("unique", ref_id)            申报数量与某货件的 HS 分组数量精确一致且唯一
+      - ("split", {ref_id: 数量权重})  候选货件分组数量合计 == 申报数量，按数量比例拆分
+      - None                          无法唯一判定，保持待确认（绝不强行归集）
+    """
+    a_qty = article.declared_qty
+    if a_qty is None:
+        return None
+    a_qty = Decimal(a_qty)
+
+    buckets: List[tuple] = []
+    for r in candidates:
+        for q in _qty_buckets(r):
+            buckets.append((r.ref_id, q))
+
+    exact = [b for b in buckets if b[1] == a_qty]
+    if len(exact) == 1:
+        return ("unique", exact[0][0])
+    if len(exact) > 1:
+        # 多个货件数量都等于申报数量，无法区分（如 009 两面镜子各 12，仅申报 12）
+        return None
+
+    total = sum((b[1] for b in buckets), Decimal("0"))
+    if buckets and total == a_qty and len(buckets) > 1:
+        weights: Dict[str, Decimal] = {}
+        for rid, q in buckets:
+            weights[rid] = weights.get(rid, Decimal("0")) + q
+        return ("split", weights)
+    return None
+
+
 def match_articles_to_refs(articles: List[CustomsArticle], refs: List[PackingRef]) -> List[MatchResult]:
     """将海关税项匹配到货件，返回匹配结果列表。"""
     results: List[MatchResult] = []
@@ -105,6 +155,29 @@ def match_articles_to_refs(articles: List[CustomsArticle], refs: List[PackingRef
             continue
 
         if len(top) > 1:
+            # 多个货件并列：先按"同 HS 合并报关"用申报数量自动判定，判不了才待确认
+            resolved = _resolve_merged_by_qty(art, [t[1] for t in top])
+            if resolved:
+                kind, payload = resolved
+                res.hs_match = top[0][2]
+                res.qty_match = top[0][3]
+                res.desc_match = top[0][4]
+                res.status = "auto"
+                if kind == "unique":
+                    res.ref_id = payload
+                    res.candidate_refs = [payload]
+                    res.reason = ("同 HS 合并报关：申报数量 "
+                                  f"{art.declared_qty} 与该货件完全一致，自动归属")
+                else:
+                    res.ref_id = None
+                    res.candidate_refs = list(payload.keys())
+                    res.split_weights = dict(payload)
+                    res.reason = ("同 HS 合并报关：多个货件合并申报"
+                                  f"（合计 {sum(payload.values())} = 申报 {art.declared_qty}），"
+                                  "已按各货件数量比例自动拆分归属")
+                results.append(res)
+                continue
+
             # 多个货件并列，无法唯一确认
             res.status = "pending"
             res.candidate_refs = [t[1].ref_id for t in top]
@@ -204,7 +277,12 @@ def compute_ref_duty(matches: List[MatchResult], article_rmb: Dict[str, Decimal]
     unmatched_items = []
     for m in matches:
         rmb = article_rmb.get(m.article_key, Decimal("0"))
-        if m.status in ("auto", "manual") and m.ref_id:
+        if m.split_weights:
+            # 合并报关：按各货件数量比例拆分，最大余数法保证拆分金额合计等于该税项金额
+            shares = largest_remainder(list(m.split_weights.values()), q2(rmb))
+            for rid, sh in zip(m.split_weights.keys(), shares):
+                allocated[rid] = allocated.get(rid, Decimal("0")) + sh
+        elif m.status in ("auto", "manual") and m.ref_id:
             allocated[m.ref_id] = allocated.get(m.ref_id, Decimal("0")) + rmb
         else:
             pending_amount += rmb
