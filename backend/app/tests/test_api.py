@@ -86,6 +86,37 @@ def test_full_flow_009_mirror_pending_blocks_export(tmp_db):
     assert r.content[:2] == b"PK"  # xlsx zip 头
 
 
+def test_analyze_one_shot(tmp_db):
+    """一步式分析：只填柜号/海运费/关税总额（汇率留空），上传文件即出结果与自核结论。"""
+    c = _client(tmp_db)
+    xlsx = build_packing_excel_008()
+    pdf = build_uitnodiging_pdf_008()
+    r = c.post(
+        "/api/analyze",
+        data={"cabinet_no": "008", "sea_freight": "54485.80", "rmb_duty": "7486.68"},
+        files={
+            "packing": ("p.xlsx", xlsx,
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            "customs": ("c.pdf", pdf, "application/pdf"),
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["cabinet_no"] == "008"
+    assert body["packing"] and body["customs"]  # 解析结果一并返回
+    assert abs(sum(body["sea_freight_alloc"].values()) - 54485.80) < 0.01
+    # 汇率留空 -> 自动推算（关税总额 ÷ 欧元关税总额）
+    assert float(body["reconciliation"]["exchange_rate"]) > 0
+    # 自核结论：008 无待确认，海运费与关税均对平
+    v = body["verification"]
+    assert v["sea_balanced"] is True
+    assert v["duty_balanced"] is True
+    assert v["pending_count"] == 0
+    assert v["unresolved"] is False
+    # 金额字段应为 number，便于前端直接 toFixed
+    assert isinstance(next(iter(body["sea_freight_alloc"].values())), float)
+
+
 def test_export_pending_when_unresolved(tmp_db):
     c = _client(tmp_db)
     r = c.post("/api/sessions", json={"cabinet_no": "008b", "sea_freight": 54485.80,
