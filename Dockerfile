@@ -2,7 +2,7 @@
 FROM node:20-alpine AS frontend
 WORKDIR /build
 COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install
+RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
@@ -10,8 +10,8 @@ FROM python:3.13-slim AS backend
 WORKDIR /app
 
 # 后端依赖
-COPY backend/requirements.txt ./backend/requirements.txt
-RUN pip install --no-cache-dir -r backend/requirements.txt
+COPY requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # 后端源码
 COPY backend/ ./backend/
