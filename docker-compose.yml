@@ -1,0 +1,17 @@
+services:
+  sea-freight:
+    build: .
+    container_name: sea-freight-cost-allocation
+    ports:
+      - "8000:8000"
+    environment:
+      # 数据库文件位置（容器内）；挂载卷以持久化。
+      SEA_FREIGHT_DB: /app/data/sea_freight.db
+      # 正式集成 ERP 时改为 ERP 域名白名单，例如 https://erp.your-company.com
+      CORS_ORIGINS: "*"
+    volumes:
+      - sea_freight_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  sea_freight_data:
