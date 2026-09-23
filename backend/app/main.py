@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from decimal import Decimal
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query
+from fastapi import FastAPI, File, Form, UploadFile, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from urllib.parse import quote
@@ -47,6 +47,36 @@ def _decimals_to_float(o):
     if isinstance(o, (list, tuple)):
         return [_decimals_to_float(x) for x in o]
     return o
+
+
+def _as_float(v):
+    try:
+        return float(v)
+    except Exception:
+        return v
+
+
+def _normalize_numbers(out: dict) -> dict:
+    """把金额/数量字段统一为 number，便于前端直接 toFixed（存储层仍用字符串 Decimal）。"""
+    if not isinstance(out, dict):
+        return out
+    for k in ("sea_freight_alloc", "duty_alloc", "article_rmb"):
+        if isinstance(out.get(k), dict):
+            out[k] = {kk: _as_float(vv) for kk, vv in out[k].items()}
+    if "pending_duty" in out:
+        out["pending_duty"] = _as_float(out["pending_duty"])
+    for r in out.get("refs", []) or []:
+        if isinstance(r, dict) and r.get("volume_m3") is not None:
+            r["volume_m3"] = _as_float(r["volume_m3"])
+    for m in out.get("matches", []) or []:
+        if not isinstance(m, dict):
+            continue
+        for k in ("duty_eur", "vat_eur"):
+            if m.get(k) is not None:
+                m[k] = _as_float(m[k])
+        if m.get("declared_qty") is not None:
+            m["declared_qty"] = _as_float(m["declared_qty"])
+    return out
 
 
 @app.get("/api/health")
@@ -116,13 +146,81 @@ def upload_customs(session_id: str, files: List[UploadFile] = File(...)):
 @app.post("/api/sessions/{session_id}/compute")
 def compute(session_id: str):
     res = svc.compute(session_id)
-    return _decimals_to_float(res)
+    return _normalize_numbers(_decimals_to_float(res))
+
+
+def _build_verification(out: dict) -> dict:
+    """自核结论：把需要人工核对的点自动核一遍，前端直接展示结论，无需逐步点检。"""
+    rc = out.get("reconciliation") or {}
+    counts = {"auto": 0, "manual": 0, "pending": 0, "unmatched": 0}
+    for m in out.get("matches", []):
+        st = m.get("status", "unmatched")
+        counts[st] = counts.get(st, 0) + 1
+
+    def _ok(v):
+        try:
+            return abs(float(v)) < 0.005
+        except Exception:
+            return False
+
+    return {
+        "sea_balanced": _ok(rc.get("sea_freight_diff", 0)),
+        "duty_balanced": _ok(rc.get("duty_diff", 0)),
+        "match_counts": counts,
+        "pending_count": counts.get("pending", 0) + counts.get("unmatched", 0),
+        "box_count_diff": rc.get("box_count_diff"),
+        "qty_diff_count": len(rc.get("declared_qty_diff") or []),
+        "unresolved": bool(rc.get("unresolved_exceptions")),
+    }
+
+
+@app.post("/api/analyze")
+def analyze(
+    cabinet_no: str = Form(...),
+    sea_freight: float = Form(...),
+    rmb_duty: float = Form(...),
+    exchange_rate: Optional[float] = Form(None),
+    note: str = Form(""),
+    packing: UploadFile = File(...),
+    customs: List[UploadFile] = File(default=[]),
+):
+    """一步式分析：建会话 → 解析装箱单 → 解析海关税单 → 匹配分摊 → 自核。
+
+    只需填柜号/海运费/关税总额（汇率可留空自动推算）并上传文件，
+    一次请求返回分摊结果与自核结论。
+    """
+    sid = svc.create_session(cabinet_no, sea_freight, rmb_duty, exchange_rate, note)
+    svc.parse_and_store_packing(sid, packing.file.read())
+
+    from .parsers.zip_handler import extract_zip_bytes
+
+    pdf_files: List[tuple] = []
+    for f in customs or []:
+        content = f.file.read()
+        fname = f.filename or ""
+        if fname.lower().endswith(".zip") or content[:2] == b"PK":
+            pdf_files.extend(extract_zip_bytes(content))
+        elif content[:5] == b"%PDF-":
+            pdf_files.append((fname, content, True))
+    if not pdf_files:
+        raise HTTPException(400, "未检测到可解析的海关税单（请上传 PDF 或 ZIP）")
+    svc.parse_and_store_customs(sid, pdf_files)
+
+    res = svc.compute(sid)
+    s = repo.get_session(sid)
+    res["packing"] = s["data"].get("packing")
+    res["customs"] = s["data"].get("customs")
+
+    out = _normalize_numbers(_decimals_to_float(_sanitize(res)))
+    out["cabinet_no"] = cabinet_no
+    out["verification"] = _build_verification(out)
+    return out
 
 
 @app.post("/api/sessions/{session_id}/confirm")
 def confirm(session_id: str, inp: schemas.ConfirmationInput):
     res = svc.apply_confirmations(session_id, inp.confirmations, inp.splits, inp.actor)
-    return _decimals_to_float(res)
+    return _normalize_numbers(_decimals_to_float(res))
 
 
 @app.post("/api/sessions/{session_id}/adjust")
