@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-REM Windows 本地试用：首次运行需要 Python 3.11+、Node.js 20+ 和联网安装依赖。
+REM Windows 本地试用：首次运行需要 Python 3.11+、Node.js 22+ 和联网安装依赖。
 setlocal
 cd /d "%~dp0"
 
@@ -51,7 +51,7 @@ echo 请安装 Python 3.11 或更新版本，安装时勾选 Add python.exe to P
 goto :failed
 
 :no_node
-echo 请安装 Node.js 20 或更新版本，用于首次构建网页界面。
+echo 请安装 Node.js 24 LTS（或 22 LTS），用于首次构建网页界面。
 goto :failed
 
 :failed
